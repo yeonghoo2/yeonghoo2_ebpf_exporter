@@ -1,0 +1,50 @@
+metrics:
+  histograms:
+    - name: orphaned_sockets
+      help: "Number of orphaned sockets"
+      table: orphaned_sockets
+      labels:
+        - name: src_ip
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: dst_ip
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: src_port
+          size: 2
+          decoders:
+            - name: uint
+        - name: dst_port
+          size: 2
+          decoders:
+            - name: uint
+        - name: pid
+          size: 4
+          decoders:
+            - name: uint
+        - name: tgid
+          size: 4
+          decoders:
+            - name: uint
+        - name: family
+          size: 1
+          decoders:
+            - name: uint
+        - name: timestamp
+          size: 8
+          decoders:
+            - name: uint
+        - name: state
+          size: 4
+          decoders:
+            - name: uint
+        - name: orphan_count
+          size: 4
+          decoders:
+            - name: uint
+        - name: comm
+          size: 16
+          decoders:
+            - name: string
