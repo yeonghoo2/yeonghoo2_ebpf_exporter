@@ -32,7 +32,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, struct close_wait_key_t);
-    __type(value, struct close_wait_info_t);
+    __type(value, u64);  // 구조체 대신 u64 사용
 } close_wait_sockets SEC(".maps");
 
 static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
@@ -55,7 +55,6 @@ static int trace_ipv4_close_wait(const struct sock *sk, u32 state)
     }
 
     struct close_wait_key_t key = {};
-    struct close_wait_info_t info = {};
 
     key.saddr = sk->__sk_common.skc_rcv_saddr;
     key.daddr = sk->__sk_common.skc_daddr;
@@ -64,12 +63,7 @@ static int trace_ipv4_close_wait(const struct sock *sk, u32 state)
     key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
     key.tgid = bpf_get_current_pid_tgid() >> 32;
 
-    info.timestamp = bpf_ktime_get_ns();
-    info.state = state;
-    info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-    bpf_get_current_comm(&info.comm, sizeof(info.comm));
-
-    bpf_map_update_elem(&close_wait_sockets, &key, &info, BPF_ANY);
+    increment_map(&close_wait_sockets, &key, 1);  // 구조체 대신 카운터 증가
 
     return 0;
 }
@@ -82,7 +76,6 @@ static int trace_ipv6_close_wait(const struct sock *sk, u32 state)
     }
 
     struct close_wait_key_t key = {};
-    struct close_wait_info_t info = {};
 
     // For IPv6, we'll use the first 4 bytes of the address as key
     // This is a simplification - in a real implementation you might want to handle IPv6 differently
@@ -93,12 +86,7 @@ static int trace_ipv6_close_wait(const struct sock *sk, u32 state)
     key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
     key.tgid = bpf_get_current_pid_tgid() >> 32;
 
-    info.timestamp = bpf_ktime_get_ns();
-    info.state = state;
-    info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-    bpf_get_current_comm(&info.comm, sizeof(info.comm));
-
-    bpf_map_update_elem(&close_wait_sockets, &key, &info, BPF_ANY);
+    increment_map(&close_wait_sockets, &key, 1);
 
     return 0;
 }

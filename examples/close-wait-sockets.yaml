@@ -1,8 +1,7 @@
 metrics:
   counters:
-    - name: close_wait_socket_count
+    - name: close_wait_sockets
       help: "Number of sockets in CLOSE_WAIT state"
-      table: close_wait_sockets
       labels:
         - name: src_ip
           size: 4
@@ -25,22 +24,6 @@ metrics:
           decoders:
             - name: uint
         - name: tgid
-          size: 4
-          decoders:
-            - name: uint
-        - name: uid
-          size: 4
-          decoders:
-            - name: uint
-        - name: comm
-          size: 16
-          decoders:
-            - name: string
-        - name: timestamp
-          size: 8
-          decoders:
-            - name: uint
-        - name: state
           size: 4
           decoders:
             - name: uint
