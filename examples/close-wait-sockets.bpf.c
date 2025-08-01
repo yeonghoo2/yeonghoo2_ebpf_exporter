@@ -3,6 +3,7 @@
 #include "maps.bpf.h"
 
 #define MAX_ENTRIES 8192
+#define MAX_DURATION 30 // 30초 (초 단위)
 // TCP states
 #define TCP_CLOSE_WAIT 8
 #define AF_INET 2
@@ -19,7 +20,7 @@ struct close_wait_key_t {
 };
 
 struct close_wait_info_t {
-    u64 timestamp;
+    u64 start_time;  // CLOSE_WAIT 시작 시간
     u32 state;
     u32 uid;
     char comm[16];
@@ -29,8 +30,20 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, struct close_wait_key_t);
-    __type(value, u64); // 구조체 대신 u64 사용
+    __type(value, struct close_wait_info_t);
 } close_wait_sockets SEC(".maps");
+
+// 지속 시간이 임계값을 초과한 소켓들의 히스토그램
+struct duration_key_t {
+    u32 bucket;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 64);
+    __type(key, struct duration_key_t);
+    __type(value, u64);
+} tcp_close_wait_duration_seconds SEC(".maps");
 
 static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 {
@@ -57,7 +70,13 @@ static int trace_ipv4_close_wait(const struct sock *sk, u32 state)
     key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
     key.tgid = bpf_get_current_pid_tgid() >> 32;
 
-    increment_map(&close_wait_sockets, &key, 1); // 구조체 대신 카운터 증가
+    struct close_wait_info_t info = {};
+    info.start_time = bpf_ktime_get_ns() / 1000000000; // 초 단위로 변환
+    info.state = state;
+    info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
+    bpf_get_current_comm(&info.comm, sizeof(info.comm));
+
+    bpf_map_update_elem(&close_wait_sockets, &key, &info, BPF_ANY);
     return 0;
 }
 
@@ -78,7 +97,13 @@ static int trace_ipv6_close_wait(const struct sock *sk, u32 state)
     key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
     key.tgid = bpf_get_current_pid_tgid() >> 32;
 
-    increment_map(&close_wait_sockets, &key, 1);
+    struct close_wait_info_t info = {};
+    info.start_time = bpf_ktime_get_ns() / 1000000000; // 초 단위로 변환
+    info.state = state;
+    info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
+    bpf_get_current_comm(&info.comm, sizeof(info.comm));
+
+    bpf_map_update_elem(&close_wait_sockets, &key, &info, BPF_ANY);
     return 0;
 }
 
@@ -104,7 +129,7 @@ int BPF_PROG(tcp_set_state, struct sock *sk, int state)
     return 0;
 }
 
-// Also track when sockets are released to clean up the map
+// 소켓이 해제될 때 지속 시간을 계산하고 임계값 이상인 경우만 히스토그램에 추가
 SEC("fentry/__sock_release")
 int BPF_PROG(sock_release, struct socket *sock)
 {
@@ -131,7 +156,29 @@ int BPF_PROG(sock_release, struct socket *sock)
     key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
     key.tgid = bpf_get_current_pid_tgid() >> 32;
 
-    bpf_map_delete_elem(&close_wait_sockets, &key);
+    // CLOSE_WAIT 정보 조회
+    struct close_wait_info_t *info = bpf_map_lookup_elem(&close_wait_sockets, &key);
+    if (info) {
+        u64 current_time = bpf_ktime_get_ns() / 1000000000; // 초 단위
+        u64 duration = current_time - info->start_time;
+        
+        bpf_printk("Socket release: duration=%llu seconds, threshold=%d\n", duration, MAX_DURATION);
+        
+        // 30초 이상인 경우만 히스토그램에 추가
+        if (duration >= MAX_DURATION) {
+            struct duration_key_t duration_key = {};
+            duration_key.bucket = duration / 5; // 5초 단위로 버킷화
+            
+            increment_map(&tcp_close_wait_duration_seconds, &duration_key, 1);
+            bpf_printk("Long CLOSE_WAIT detected! duration=%llu seconds, bucket=%d\n", duration, duration_key.bucket);
+        }
+        
+        // 맵에서 제거
+        bpf_map_delete_elem(&close_wait_sockets, &key);
+    } else {
+        bpf_printk("No CLOSE_WAIT info found for socket\n");
+    }
+    
     return 0;
 }
 

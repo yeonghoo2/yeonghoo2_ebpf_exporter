@@ -1,7 +1,11 @@
 metrics:
-  counters:
-    - name: close_wait_sockets
-      help: "Number of sockets in CLOSE_WAIT state"
+  histograms:
+    - name: tcp_close_wait_duration_seconds
+      help: "Duration of TCP CLOSE_WAIT state (only for durations >= 30 seconds)"
+      bucket_type: linear
+      bucket_min: 6  # 30초 / 5초 = 6 (30초부터 시작)
+      bucket_max: 60 # 300초 / 5초 = 60 (300초까지)
+      bucket_multiplier: 5 # 5초 단위로 버킷화
       labels:
         - name: src_ip
           size: 4
@@ -24,6 +28,10 @@ metrics:
           decoders:
             - name: uint
         - name: tgid
+          size: 4
+          decoders:
+            - name: uint
+        - name: bucket
           size: 4
           decoders:
             - name: uint
