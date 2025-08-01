@@ -1,5 +1,5 @@
 metrics:
-  histograms:
+  counters:
     - name: orphaned_sockets
       help: "Number of orphaned sockets"
       table: orphaned_sockets
@@ -29,22 +29,6 @@ metrics:
           decoders:
             - name: uint
         - name: family
-          size: 1
-          decoders:
-            - name: uint
-        - name: timestamp
-          size: 8
-          decoders:
-            - name: uint
-        - name: state
           size: 4
           decoders:
             - name: uint
-        - name: orphan_count
-          size: 4
-          decoders:
-            - name: uint
-        - name: comm
-          size: 16
-          decoders:
-            - name: string

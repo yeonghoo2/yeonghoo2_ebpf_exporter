@@ -18,7 +18,7 @@ struct orphan_key_t {
     u16 dport;
     u32 pid;
     u32 tgid;
-    u8 family;
+    u32 family;  // u8 대신 u32 사용 (패딩 자동 처리)
 };
 
 struct orphan_info_t {
@@ -28,12 +28,12 @@ struct orphan_info_t {
     char comm[16];
 };
 
-// Orphaned socket 추적 맵
+// Orphaned socket 추적 맵 (카운터로 변경)
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, struct orphan_key_t);
-    __type(value, struct orphan_info_t);
+    __type(value, u64);  // 구조체 대신 u64 사용
 } orphaned_sockets SEC(".maps");
 
 // 전체 orphan 통계 맵
