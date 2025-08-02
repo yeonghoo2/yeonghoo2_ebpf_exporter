@@ -21,26 +21,22 @@ struct {
 } close_wait_total SEC(".maps");
 
 // 2. 프로세스별 카운터 (node_ip 제거) - 16자 이내
-struct process_key_t {
-    u32 pid;
-    u32 ifindex;      // 네트워크 인터페이스 인덱스만 유지
-};
-
+// 패딩 문제를 피하기 위해 u64로 통합
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 1000);
-    __type(key, struct process_key_t);
+    __type(key, u64);  // pid(32bit) + ifindex(32bit)를 하나의 u64로
     __type(value, u64);
 } close_wait_proc SEC(".maps");
 
 // 3. 상세 추적 (모든 CLOSE_WAIT 소켓) - 16자 이내
+// 단순화된 키 구조체
 struct close_wait_key_t {
+    u32 pid;
+    u32 sport;
+    u32 dport;
     u32 saddr;
     u32 daddr;
-    u16 sport;
-    u16 dport;
-    u32 pid;
-    u32 tgid;
 };
 
 struct {
@@ -93,6 +89,11 @@ static void increment_map_value(void *map, void *key, u64 value) {
     }
 }
 
+// 프로세스 키를 u64로 만드는 헬퍼 함수
+static u64 make_process_key(u32 pid, u32 ifindex) {
+    return ((u64)pid << 32) | ifindex;
+}
+
 static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 {
     if (bpf_probe_read_kernel(sport, sizeof(*sport), &sk->__sk_common.skc_num) != 0) {
@@ -126,20 +127,18 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
     }
 
     u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-    u32 tgid = bpf_get_current_pid_tgid() >> 32;
 
     // 1. 전체 카운터 증가
     u32 total_key = 0;
     increment_map_value(&close_wait_total, &total_key, 1);
 
-    // 2. 프로세스별 카운터 (node_ip 제거)
-    struct process_key_t pkey = {};
-    pkey.pid = pid;
-    pkey.ifindex = get_interface_index(sk);
+    // 2. 프로세스별 카운터 (u64 키 사용)
+    u32 ifindex = get_interface_index(sk);
+    u64 process_key = make_process_key(pid, ifindex);
     
-    increment_map_value(&close_wait_proc, &pkey, 1);
+    increment_map_value(&close_wait_proc, &process_key, 1);
 
-    // 3. 상세 추적을 위한 소켓 정보 저장
+    // 3. 상세 추적을 위한 소켓 정보 저장 (단순화된 키)
     struct close_wait_key_t key = {};
     u32 family = 0;
     if (bpf_probe_read_kernel(&family, sizeof(family), &sk->__sk_common.skc_family) == 0) {
@@ -153,17 +152,16 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
                                 &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
         }
     }
+    key.pid = pid;
     key.sport = sport;
     key.dport = dport;
-    key.pid = pid;
-    key.tgid = tgid;
 
     // close_wait_sock 맵에 카운터 저장
     u64 counter_value = 1;
     bpf_map_update_elem(&close_wait_sock, &key, &counter_value, BPF_ANY);
 
     bpf_printk("CLOSE_WAIT START: pid=%d, sport=%d, dport=%d, saddr=%u, daddr=%u, ifindex=%d\n", 
-               pid, sport, dport, key.saddr, key.daddr, pkey.ifindex);
+               pid, sport, dport, key.saddr, key.daddr, ifindex);
     return 0;
 }
 
@@ -175,9 +173,8 @@ static int trace_close_wait_end(const struct sock *sk)
     }
 
     u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-    u32 tgid = bpf_get_current_pid_tgid() >> 32;
 
-    // 소켓 키 생성
+    // 소켓 키 생성 (단순화된 키)
     struct close_wait_key_t key = {};
     u32 family = 0;
     if (bpf_probe_read_kernel(&family, sizeof(family), &sk->__sk_common.skc_family) == 0) {
@@ -191,10 +188,9 @@ static int trace_close_wait_end(const struct sock *sk)
                                 &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
         }
     }
+    key.pid = pid;
     key.sport = sport;
     key.dport = dport;
-    key.pid = pid;
-    key.tgid = tgid;
 
     // CLOSE_WAIT 상태였던 소켓인지 확인
     u64 *counter_value = bpf_map_lookup_elem(&close_wait_sock, &key);
@@ -211,12 +207,11 @@ static int trace_close_wait_end(const struct sock *sk)
         __sync_fetch_and_add(total_count, -1);
     }
 
-    // 프로세스별 카운터 감소 (원래 PID 정보는 저장하지 않으므로 현재 PID 사용)
-    struct process_key_t pkey = {};
-    pkey.pid = pid;
-    pkey.ifindex = get_interface_index(sk);
+    // 프로세스별 카운터 감소 (u64 키 사용)
+    u32 ifindex = get_interface_index(sk);
+    u64 process_key = make_process_key(pid, ifindex);
     
-    u64 *pcount = bpf_map_lookup_elem(&close_wait_proc, &pkey);
+    u64 *pcount = bpf_map_lookup_elem(&close_wait_proc, &process_key);
     if (pcount && *pcount > 0) {
         __sync_fetch_and_add(pcount, -1);
         bpf_printk("CLOSE_WAIT END: Decreased counter for pid=%d, sport=%d, dport=%d\n", 
@@ -240,11 +235,11 @@ static int trace_close_wait_end(const struct sock *sk)
     long_key.sport = sport;
     long_key.dport = dport;
     long_key.pid = pid;
-    long_key.tgid = tgid;
-    long_key.start_time = bpf_ktime_get_ns() / 1000000000;  // 여기서 사용
+    long_key.tgid = bpf_get_current_pid_tgid() >> 32;  // 여기서 사용
+    long_key.start_time = bpf_ktime_get_ns() / 1000000000;
     long_key.state = 8; // TCP_CLOSE_WAIT
     long_key.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-    long_key.ifindex = pkey.ifindex;
+    long_key.ifindex = ifindex;
     
     u64 long_counter = 1;
     bpf_map_update_elem(&long_duration, &long_key, &long_counter, BPF_ANY);

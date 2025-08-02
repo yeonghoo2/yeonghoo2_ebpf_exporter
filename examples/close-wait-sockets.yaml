@@ -8,12 +8,8 @@ metrics:
     - name: close_wait_proc
       help: "CLOSE_WAIT sockets by process and interface"
       labels:
-        - name: pid
-          size: 4
-          decoders:
-            - name: uint
-        - name: ifindex
-          size: 4
+        - name: pid_ifindex
+          size: 8
           decoders:
             - name: uint
 
@@ -81,6 +77,18 @@ metrics:
     - name: close_wait_sock
       help: "Currently tracked CLOSE_WAIT sockets with detailed information"
       labels:
+        - name: pid
+          size: 4
+          decoders:
+            - name: uint
+        - name: src_port
+          size: 4
+          decoders:
+            - name: uint
+        - name: dst_port
+          size: 4
+          decoders:
+            - name: uint
         - name: src_ip
           size: 4
           decoders:
@@ -89,35 +97,3 @@ metrics:
           size: 4
           decoders:
             - name: inet_ip
-        - name: src_port
-          size: 2
-          decoders:
-            - name: uint
-        - name: dst_port
-          size: 2
-          decoders:
-            - name: uint
-        - name: pid
-          size: 4
-          decoders:
-            - name: uint
-        - name: tgid
-          size: 4
-          decoders:
-            - name: uint
-        - name: start_time
-          size: 8
-          decoders:
-            - name: uint
-        - name: state
-          size: 4
-          decoders:
-            - name: uint
-        - name: uid
-          size: 4
-          decoders:
-            - name: uint
-        - name: ifindex
-          size: 4
-          decoders:
-            - name: uint
