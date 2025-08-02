@@ -20,17 +20,16 @@ struct {
     __type(value, u64);
 } close_wait_total SEC(".maps");
 
-// 2. 노드 정보를 포함한 프로세스별 카운터 - 16자 이내
-struct node_process_key_t {
+// 2. 프로세스별 카운터 (node_ip 제거) - 16자 이내
+struct process_key_t {
     u32 pid;
-    u32 node_ip;      // 노드 IP
-    u32 ifindex;      // 네트워크 인터페이스 인덱스
+    u32 ifindex;      // 네트워크 인터페이스 인덱스만 유지
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 1000);
-    __type(key, struct node_process_key_t);
+    __type(key, struct process_key_t);
     __type(value, u64);
 } close_wait_proc SEC(".maps");
 
@@ -48,9 +47,8 @@ struct close_wait_info_t {
     u64 start_time;
     u32 state;
     u32 uid;
-    u32 node_ip;
     u32 ifindex;
-    u32 pid;  // CLOSE_WAIT을 시작한 프로세스의 PID 추가
+    u32 pid;  // CLOSE_WAIT을 시작한 프로세스의 PID
 };
 
 struct {
@@ -115,23 +113,6 @@ static u32 get_interface_index(const struct sock *sk)
     return 0;
 }
 
-// 노드 IP를 가져오는 함수 (로컬 주소 기반)
-static u32 get_node_ip(const struct sock *sk)
-{
-    u32 family = 0;
-    if (bpf_probe_read_kernel(&family, sizeof(family), &sk->__sk_common.skc_family) != 0) {
-        return 0;
-    }
-    
-    if (family == AF_INET) {
-        u32 rcv_saddr = 0;
-        if (bpf_probe_read_kernel(&rcv_saddr, sizeof(rcv_saddr), &sk->__sk_common.skc_rcv_saddr) == 0) {
-            return rcv_saddr;
-        }
-    }
-    return 0;
-}
-
 static int trace_close_wait_start(const struct sock *sk, u32 state)
 {
     u16 sport, dport;
@@ -147,13 +128,12 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
     u32 total_key = 0;
     increment_map_value(&close_wait_total, &total_key, 1);
 
-    // 2. 노드 정보를 포함한 프로세스별 카운터
-    struct node_process_key_t npkey = {};
-    npkey.pid = pid;
-    npkey.node_ip = get_node_ip(sk);
-    npkey.ifindex = get_interface_index(sk);
+    // 2. 프로세스별 카운터 (node_ip 제거)
+    struct process_key_t pkey = {};
+    pkey.pid = pid;
+    pkey.ifindex = get_interface_index(sk);
     
-    increment_map_value(&close_wait_proc, &npkey, 1);
+    increment_map_value(&close_wait_proc, &pkey, 1);
 
     // 3. 상세 추적을 위한 소켓 정보 저장
     struct close_wait_key_t key = {};
@@ -178,14 +158,13 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
     info.start_time = current_time;
     info.state = state;
     info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-    info.node_ip = npkey.node_ip;
-    info.ifindex = npkey.ifindex;
+    info.ifindex = pkey.ifindex;
     info.pid = pid;  // CLOSE_WAIT을 시작한 프로세스의 PID 저장
 
     bpf_map_update_elem(&close_wait_sock, &key, &info, BPF_ANY);
 
-    bpf_printk("CLOSE_WAIT started: pid=%d, sport=%d, dport=%d, ifindex=%d\n", 
-               pid, sport, dport, npkey.ifindex);
+    bpf_printk("CLOSE_WAIT START: pid=%d, sport=%d, dport=%d, saddr=%u, daddr=%u, ifindex=%d\n", 
+               pid, sport, dport, key.saddr, key.daddr, pkey.ifindex);
     return 0;
 }
 
@@ -222,6 +201,8 @@ static int trace_close_wait_end(const struct sock *sk)
     // CLOSE_WAIT 상태였던 소켓인지 확인
     struct close_wait_info_t *info = bpf_map_lookup_elem(&close_wait_sock, &key);
     if (!info) {
+        bpf_printk("CLOSE_WAIT END: No tracking info found for pid=%d, sport=%d, dport=%d\n", 
+                   pid, sport, dport);
         return 0; // CLOSE_WAIT 상태가 아니었던 소켓
     }
 
@@ -235,14 +216,18 @@ static int trace_close_wait_end(const struct sock *sk)
     }
 
     // 수정된 부분: CLOSE_WAIT을 시작한 원래 프로세스의 정보로 감소
-    struct node_process_key_t npkey = {};
-    npkey.pid = info->pid;  // CLOSE_WAIT 시작할 때의 PID 사용
-    npkey.node_ip = info->node_ip;
-    npkey.ifindex = info->ifindex;
+    struct process_key_t pkey = {};
+    pkey.pid = info->pid;  // CLOSE_WAIT 시작할 때의 PID 사용
+    pkey.ifindex = info->ifindex;
     
-    u64 *npcount = bpf_map_lookup_elem(&close_wait_proc, &npkey);
-    if (npcount && *npcount > 0) {
-        __sync_fetch_and_add(npcount, -1);
+    u64 *pcount = bpf_map_lookup_elem(&close_wait_proc, &pkey);
+    if (pcount && *pcount > 0) {
+        __sync_fetch_and_add(pcount, -1);
+        bpf_printk("CLOSE_WAIT END: Decreased counter for pid=%d, current_pid=%d, sport=%d, dport=%d, duration=%llu\n", 
+                   info->pid, pid, sport, dport, duration);
+    } else {
+        bpf_printk("CLOSE_WAIT END: Counter not found for pid=%d, current_pid=%d, sport=%d, dport=%d\n", 
+                   info->pid, pid, sport, dport);
     }
 
     // 30초 이상 지속된 경우 히스토그램 업데이트

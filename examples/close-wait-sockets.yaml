@@ -6,16 +6,12 @@ metrics:
       labels: []
 
     - name: close_wait_proc
-      help: "CLOSE_WAIT sockets by node and process"
+      help: "CLOSE_WAIT sockets by process and interface"
       labels:
         - name: pid
           size: 4
           decoders:
             - name: uint
-        - name: node_ip
-          size: 4
-          decoders:
-            - name: inet_ip
         - name: ifindex
           size: 4
           decoders:
@@ -77,10 +73,6 @@ metrics:
           size: 4
           decoders:
             - name: uint
-        - name: node_ip
-          size: 4
-          decoders:
-            - name: inet_ip
         - name: ifindex
           size: 4
           decoders:
@@ -127,10 +119,6 @@ metrics:
           size: 4
           decoders:
             - name: uint
-        - name: node_ip
-          size: 4
-          decoders:
-            - name: inet_ip
         - name: ifindex
           size: 4
           decoders:
