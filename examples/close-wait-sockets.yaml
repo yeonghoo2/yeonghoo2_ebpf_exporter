@@ -72,6 +72,10 @@ metrics:
           size: 4
           decoders:
             - name: uint
+        - name: padding
+          size: 8
+          decoders:
+            - name: uint
 
     # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보 - counters로 변경
     - name: close_wait_sock
