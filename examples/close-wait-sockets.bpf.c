@@ -50,6 +50,7 @@ struct close_wait_info_t {
     u32 uid;
     u32 node_ip;
     u32 ifindex;
+    u32 pid;  // CLOSE_WAIT을 시작한 프로세스의 PID 추가
 };
 
 struct {
@@ -91,8 +92,13 @@ static void increment_map_value(void *map, void *key, u64 value) {
 
 static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 {
-    *sport = sk->__sk_common.skc_num;
-    *dport = __builtin_bswap16(sk->__sk_common.skc_dport);
+    if (bpf_probe_read_kernel(sport, sizeof(*sport), &sk->__sk_common.skc_num) != 0) {
+        return 0;
+    }
+    if (bpf_probe_read_kernel(dport, sizeof(*dport), &sk->__sk_common.skc_dport) != 0) {
+        return 0;
+    }
+    *dport = __builtin_bswap16(*dport);
     if (*sport > UPPER_PORT_BOUND && *dport > UPPER_PORT_BOUND) {
         return 0;
     }
@@ -102,8 +108,9 @@ static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 // 네트워크 인터페이스 인덱스를 가져오는 함수
 static u32 get_interface_index(const struct sock *sk)
 {
-    if (sk && sk->__sk_common.skc_bound_dev_if) {
-        return sk->__sk_common.skc_bound_dev_if;
+    u32 ifindex = 0;
+    if (bpf_probe_read_kernel(&ifindex, sizeof(ifindex), &sk->__sk_common.skc_bound_dev_if) == 0) {
+        return ifindex;
     }
     return 0;
 }
@@ -111,10 +118,17 @@ static u32 get_interface_index(const struct sock *sk)
 // 노드 IP를 가져오는 함수 (로컬 주소 기반)
 static u32 get_node_ip(const struct sock *sk)
 {
-    if (sk && sk->__sk_common.skc_family == AF_INET) {
-        return sk->__sk_common.skc_rcv_saddr;
+    u32 family = 0;
+    if (bpf_probe_read_kernel(&family, sizeof(family), &sk->__sk_common.skc_family) != 0) {
+        return 0;
     }
-    // IPv6의 경우 더 복잡한 처리가 필요할 수 있음
+    
+    if (family == AF_INET) {
+        u32 rcv_saddr = 0;
+        if (bpf_probe_read_kernel(&rcv_saddr, sizeof(rcv_saddr), &sk->__sk_common.skc_rcv_saddr) == 0) {
+            return rcv_saddr;
+        }
+    }
     return 0;
 }
 
@@ -143,14 +157,17 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
 
     // 3. 상세 추적을 위한 소켓 정보 저장
     struct close_wait_key_t key = {};
-    if (sk->__sk_common.skc_family == AF_INET) {
-        key.saddr = sk->__sk_common.skc_rcv_saddr;
-        key.daddr = sk->__sk_common.skc_daddr;
-    } else if (sk->__sk_common.skc_family == AF_INET6) {
-        bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), 
-                            &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
-        bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), 
-                            &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
+    u32 family = 0;
+    if (bpf_probe_read_kernel(&family, sizeof(family), &sk->__sk_common.skc_family) == 0) {
+        if (family == AF_INET) {
+            bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), &sk->__sk_common.skc_rcv_saddr);
+            bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), &sk->__sk_common.skc_daddr);
+        } else if (family == AF_INET6) {
+            bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), 
+                                &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
+            bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), 
+                                &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
+        }
     }
     key.sport = sport;
     key.dport = dport;
@@ -163,6 +180,7 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
     info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     info.node_ip = npkey.node_ip;
     info.ifindex = npkey.ifindex;
+    info.pid = pid;  // CLOSE_WAIT을 시작한 프로세스의 PID 저장
 
     bpf_map_update_elem(&close_wait_sock, &key, &info, BPF_ANY);
 
@@ -184,14 +202,17 @@ static int trace_close_wait_end(const struct sock *sk)
 
     // 소켓 키 생성
     struct close_wait_key_t key = {};
-    if (sk->__sk_common.skc_family == AF_INET) {
-        key.saddr = sk->__sk_common.skc_rcv_saddr;
-        key.daddr = sk->__sk_common.skc_daddr;
-    } else if (sk->__sk_common.skc_family == AF_INET6) {
-        bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), 
-                            &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
-        bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), 
-                            &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
+    u32 family = 0;
+    if (bpf_probe_read_kernel(&family, sizeof(family), &sk->__sk_common.skc_family) == 0) {
+        if (family == AF_INET) {
+            bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), &sk->__sk_common.skc_rcv_saddr);
+            bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), &sk->__sk_common.skc_daddr);
+        } else if (family == AF_INET6) {
+            bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), 
+                                &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
+            bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), 
+                                &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
+        }
     }
     key.sport = sport;
     key.dport = dport;
@@ -213,8 +234,9 @@ static int trace_close_wait_end(const struct sock *sk)
         __sync_fetch_and_add(total_count, -1);
     }
 
+    // 수정된 부분: CLOSE_WAIT을 시작한 원래 프로세스의 정보로 감소
     struct node_process_key_t npkey = {};
-    npkey.pid = pid;
+    npkey.pid = info->pid;  // CLOSE_WAIT 시작할 때의 PID 사용
     npkey.node_ip = info->node_ip;
     npkey.ifindex = info->ifindex;
     
@@ -243,9 +265,15 @@ static int trace_close_wait_end(const struct sock *sk)
     return 0;
 }
 
-SEC("fentry/tcp_set_state")
-int BPF_PROG(tcp_set_state, struct sock *sk, int state)
+// 안전한 kprobe 사용
+SEC("kprobe/tcp_set_state")
+int tcp_set_state_probe(struct pt_regs *ctx)
 {
+    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    int state = (int)PT_REGS_PARM2(ctx);
+    
+    if (!sk) return 0;
+    
     // 맵 초기화 (첫 번째 호출 시)
     u32 total_key = 0;
     u64 *total_count = bpf_map_lookup_elem(&close_wait_total, &total_key);
@@ -261,20 +289,19 @@ int BPF_PROG(tcp_set_state, struct sock *sk, int state)
     return 0;
 }
 
-SEC("fentry/__sock_release")
-int BPF_PROG(sock_release, struct socket *sock)
+SEC("kprobe/__sock_release")
+int sock_release_probe(struct pt_regs *ctx)
 {
-    if (!sock || !sock->sk) {
+    struct socket *sock = (struct socket *)PT_REGS_PARM1(ctx);
+    
+    if (!sock) return 0;
+    
+    struct sock *sk;
+    if (bpf_probe_read_kernel(&sk, sizeof(sk), &sock->sk) != 0 || !sk) {
         return 0;
     }
 
-    return trace_close_wait_end(sock->sk);
-}
-
-SEC("fentry/tcp_keepalive_timer")
-int BPF_PROG(tcp_keepalive_timer, struct timer_list *t)
-{
-    return 0;
+    return trace_close_wait_end(sk);
 }
 
 char LICENSE[] SEC("license") = "GPL";

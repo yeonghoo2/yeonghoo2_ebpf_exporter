@@ -1,11 +1,11 @@
 metrics:
   # 1. 실시간 총 카운터
   counters:
-    - name: tcp_close_wait_total
+    - name: close_wait_total
       help: "Current number of sockets in CLOSE_WAIT state"
       labels: []
 
-    - name: tcp_close_wait_by_node_process
+    - name: close_wait_proc
       help: "CLOSE_WAIT sockets by node and process"
       labels:
         - name: pid
@@ -23,7 +23,7 @@ metrics:
 
   # 2. 지속 시간 히스토그램 (30초 이상만)
   histograms:
-    - name: tcp_close_wait_duration_seconds
+    - name: close_wait_hist
       help: "Duration of TCP CLOSE_WAIT state (only for durations >= 30 seconds)"
       bucket_type: linear
       bucket_min: 6    # 30초 / 5초 = 6
@@ -37,7 +37,7 @@ metrics:
 
   # 3. 상세 추적 정보 (30초 이상 지속된 소켓들)
   gauges:
-    - name: tcp_close_wait_long_duration_info
+    - name: long_duration
       help: "Detailed information about long-duration CLOSE_WAIT sockets"
       labels:
         - name: src_ip
@@ -86,9 +86,8 @@ metrics:
           decoders:
             - name: uint
 
-  # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보
-  gauges:
-    - name: tcp_close_wait_current_sockets
+    # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보
+    - name: close_wait_sock
       help: "Currently tracked CLOSE_WAIT sockets with detailed information"
       labels:
         - name: src_ip
