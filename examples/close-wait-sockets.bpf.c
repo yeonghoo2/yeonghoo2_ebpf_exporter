@@ -1,15 +1,40 @@
 #include <vmlinux.h>
 #include <bpf/bpf_tracing.h>
-#include "maps.bpf.h"
+#include <bpf/bpf_helpers.h>
 
 #define MAX_ENTRIES 8192
 #define MAX_DURATION 30 // 30초 (초 단위)
+#define MAX_DETAILED_SOCKETS 100 // 상세 추적할 소켓 수 제한
+
 // TCP states
 #define TCP_CLOSE_WAIT 8
 #define AF_INET 2
 #define AF_INET6 10
 #define UPPER_PORT_BOUND 32768
 
+// 1. 실시간 카운터 (모든 CLOSE_WAIT 소켓) - 16자 이내
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} close_wait_total SEC(".maps");
+
+// 2. 노드 정보를 포함한 프로세스별 카운터 - 16자 이내
+struct node_process_key_t {
+    u32 pid;
+    u32 node_ip;      // 노드 IP
+    u32 ifindex;      // 네트워크 인터페이스 인덱스
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1000);
+    __type(key, struct node_process_key_t);
+    __type(value, u64);
+} close_wait_proc SEC(".maps");
+
+// 3. 상세 추적 (모든 CLOSE_WAIT 소켓) - 16자 이내
 struct close_wait_key_t {
     u32 saddr;
     u32 daddr;
@@ -20,20 +45,21 @@ struct close_wait_key_t {
 };
 
 struct close_wait_info_t {
-    u64 start_time;  // CLOSE_WAIT 시작 시간
+    u64 start_time;
     u32 state;
     u32 uid;
-    char comm[16];
+    u32 node_ip;
+    u32 ifindex;
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, MAX_ENTRIES);
+    __uint(max_entries, MAX_DETAILED_SOCKETS);
     __type(key, struct close_wait_key_t);
     __type(value, struct close_wait_info_t);
-} close_wait_sockets SEC(".maps");
+} close_wait_sock SEC(".maps");
 
-// 지속 시간이 임계값을 초과한 소켓들의 히스토그램
+// 4. 지속 시간별 히스토그램 (30초 이상만) - 16자 이내
 struct duration_key_t {
     u32 bucket;
 };
@@ -43,7 +69,25 @@ struct {
     __uint(max_entries, 64);
     __type(key, struct duration_key_t);
     __type(value, u64);
-} tcp_close_wait_duration_seconds SEC(".maps");
+} close_wait_hist SEC(".maps");
+
+// 5. 30초 이상 지속된 소켓 추적 - 16자 이내
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, MAX_DETAILED_SOCKETS);
+    __type(key, struct close_wait_key_t);
+    __type(value, struct close_wait_info_t);
+} long_duration SEC(".maps");
+
+// 헬퍼 함수들
+static void increment_map_value(void *map, void *key, u64 value) {
+    u64 *count = bpf_map_lookup_elem(map, key);
+    if (count) {
+        __sync_fetch_and_add(count, value);
+    } else {
+        bpf_map_update_elem(map, key, &value, BPF_ANY);
+    }
+}
 
 static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 {
@@ -55,105 +99,168 @@ static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
     return 1;
 }
 
-static int trace_ipv4_close_wait(const struct sock *sk, u32 state)
+// 네트워크 인터페이스 인덱스를 가져오는 함수
+static u32 get_interface_index(const struct sock *sk)
+{
+    if (sk && sk->__sk_common.skc_bound_dev_if) {
+        return sk->__sk_common.skc_bound_dev_if;
+    }
+    return 0;
+}
+
+// 노드 IP를 가져오는 함수 (로컬 주소 기반)
+static u32 get_node_ip(const struct sock *sk)
+{
+    if (sk && sk->__sk_common.skc_family == AF_INET) {
+        return sk->__sk_common.skc_rcv_saddr;
+    }
+    // IPv6의 경우 더 복잡한 처리가 필요할 수 있음
+    return 0;
+}
+
+static int trace_close_wait_start(const struct sock *sk, u32 state)
 {
     u16 sport, dport;
     if (!extract_ports(sk, &sport, &dport)) {
         return 0;
     }
 
+    u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    u64 current_time = bpf_ktime_get_ns() / 1000000000;
+
+    // 1. 전체 카운터 증가
+    u32 total_key = 0;
+    increment_map_value(&close_wait_total, &total_key, 1);
+
+    // 2. 노드 정보를 포함한 프로세스별 카운터
+    struct node_process_key_t npkey = {};
+    npkey.pid = pid;
+    npkey.node_ip = get_node_ip(sk);
+    npkey.ifindex = get_interface_index(sk);
+    
+    increment_map_value(&close_wait_proc, &npkey, 1);
+
+    // 3. 상세 추적을 위한 소켓 정보 저장
     struct close_wait_key_t key = {};
-    key.saddr = sk->__sk_common.skc_rcv_saddr;
-    key.daddr = sk->__sk_common.skc_daddr;
+    if (sk->__sk_common.skc_family == AF_INET) {
+        key.saddr = sk->__sk_common.skc_rcv_saddr;
+        key.daddr = sk->__sk_common.skc_daddr;
+    } else if (sk->__sk_common.skc_family == AF_INET6) {
+        bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), 
+                            &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
+        bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), 
+                            &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
+    }
     key.sport = sport;
     key.dport = dport;
-    key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-    key.tgid = bpf_get_current_pid_tgid() >> 32;
+    key.pid = pid;
+    key.tgid = tgid;
 
     struct close_wait_info_t info = {};
-    info.start_time = bpf_ktime_get_ns() / 1000000000; // 초 단위로 변환
+    info.start_time = current_time;
     info.state = state;
     info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-    bpf_get_current_comm(&info.comm, sizeof(info.comm));
+    info.node_ip = npkey.node_ip;
+    info.ifindex = npkey.ifindex;
 
-    bpf_map_update_elem(&close_wait_sockets, &key, &info, BPF_ANY);
-    bpf_printk("CLOSE_WAIT started: %s, pid=%d\n", info.comm, key.pid);
+    bpf_map_update_elem(&close_wait_sock, &key, &info, BPF_ANY);
+
+    bpf_printk("CLOSE_WAIT started: pid=%d, sport=%d, dport=%d, ifindex=%d\n", 
+               pid, sport, dport, npkey.ifindex);
     return 0;
 }
 
-static int trace_ipv6_close_wait(const struct sock *sk, u32 state)
+static int trace_close_wait_end(const struct sock *sk)
 {
     u16 sport, dport;
     if (!extract_ports(sk, &sport, &dport)) {
         return 0;
     }
 
+    u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    u64 current_time = bpf_ktime_get_ns() / 1000000000;
+
+    // 소켓 키 생성
     struct close_wait_key_t key = {};
-    // For IPv6, we'll use the first 4 bytes of the address as key
-    // This is a simplification - in a real implementation you might want to handle IPv6 differently
-    bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
-    bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
+    if (sk->__sk_common.skc_family == AF_INET) {
+        key.saddr = sk->__sk_common.skc_rcv_saddr;
+        key.daddr = sk->__sk_common.skc_daddr;
+    } else if (sk->__sk_common.skc_family == AF_INET6) {
+        bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), 
+                            &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
+        bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), 
+                            &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
+    }
     key.sport = sport;
     key.dport = dport;
-    key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-    key.tgid = bpf_get_current_pid_tgid() >> 32;
+    key.pid = pid;
+    key.tgid = tgid;
 
-    struct close_wait_info_t info = {};
-    info.start_time = bpf_ktime_get_ns() / 1000000000; // 초 단위로 변환
-    info.state = state;
-    info.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-    bpf_get_current_comm(&info.comm, sizeof(info.comm));
-
-    bpf_map_update_elem(&close_wait_sockets, &key, &info, BPF_ANY);
-    bpf_printk("CLOSE_WAIT started: %s, pid=%d\n", info.comm, key.pid);
-    return 0;
-}
-
-static int trace_close_wait(const struct sock *sk, u32 state)
-{
-    switch (sk->__sk_common.skc_family) {
-    case AF_INET:
-        return trace_ipv4_close_wait(sk, state);
-    case AF_INET6:
-        return trace_ipv6_close_wait(sk, state);
+    // CLOSE_WAIT 상태였던 소켓인지 확인
+    struct close_wait_info_t *info = bpf_map_lookup_elem(&close_wait_sock, &key);
+    if (!info) {
+        return 0; // CLOSE_WAIT 상태가 아니었던 소켓
     }
+
+    u64 duration = current_time - info->start_time;
+
+    // 카운터들 감소
+    u32 total_key = 0;
+    u64 *total_count = bpf_map_lookup_elem(&close_wait_total, &total_key);
+    if (total_count && *total_count > 0) {
+        __sync_fetch_and_add(total_count, -1);
+    }
+
+    struct node_process_key_t npkey = {};
+    npkey.pid = pid;
+    npkey.node_ip = info->node_ip;
+    npkey.ifindex = info->ifindex;
+    
+    u64 *npcount = bpf_map_lookup_elem(&close_wait_proc, &npkey);
+    if (npcount && *npcount > 0) {
+        __sync_fetch_and_add(npcount, -1);
+    }
+
+    // 30초 이상 지속된 경우 히스토그램 업데이트
+    if (duration >= MAX_DURATION) {
+        struct duration_key_t duration_key = {};
+        duration_key.bucket = duration / 5; // 5초 단위 버킷
+        
+        increment_map_value(&close_wait_hist, &duration_key, 1);
+        
+        // 장기간 지속된 소켓 정보 저장
+        bpf_map_update_elem(&long_duration, &key, info, BPF_ANY);
+        
+        bpf_printk("Long CLOSE_WAIT detected! duration=%llu seconds, bucket=%d, pid=%d\n", 
+                   duration, duration_key.bucket, pid);
+    }
+    
+    // 추적 맵에서 제거
+    bpf_map_delete_elem(&close_wait_sock, &key);
+    
     return 0;
 }
 
 SEC("fentry/tcp_set_state")
 int BPF_PROG(tcp_set_state, struct sock *sk, int state)
 {
-    // Only track when socket enters CLOSE_WAIT state
+    // 맵 초기화 (첫 번째 호출 시)
+    u32 total_key = 0;
+    u64 *total_count = bpf_map_lookup_elem(&close_wait_total, &total_key);
+    if (!total_count) {
+        u64 zero = 0;
+        bpf_map_update_elem(&close_wait_total, &total_key, &zero, BPF_ANY);
+    }
+
     if (state == TCP_CLOSE_WAIT) {
-        bpf_printk("CLOSE_WAIT detected! state=%d\n", state);
-        return trace_close_wait(sk, state);
+        bpf_printk("CLOSE_WAIT state detected! state=%d\n", state);
+        return trace_close_wait_start(sk, state);
     }
     return 0;
 }
 
-// 주기적으로 CLOSE_WAIT 소켓들을 체크하는 함수
-SEC("fentry/do_timer")
-int BPF_PROG(timer_check, struct timer_list *timer)
-{
-    // 주기적으로 체크 (매 10초마다)
-    u64 current_time = bpf_ktime_get_ns() / 1000000000;
-    static u64 last_check = 0;
-    
-    if (current_time - last_check < 10) {
-        return 0;
-    }
-    last_check = current_time;
-    
-    bpf_printk("Timer check: current_time=%llu\n", current_time);
-    
-    // 간단한 체크: 현재 CLOSE_WAIT 소켓 개수 확인
-    // 실제 맵 순회는 복잡하므로 여기서는 간단한 로그만 출력
-    bpf_printk("Periodic check for CLOSE_WAIT sockets\n");
-    
-    return 0;
-}
-
-// 소켓이 해제될 때 지속 시간을 계산하고 임계값 이상인 경우만 히스토그램에 추가
 SEC("fentry/__sock_release")
 int BPF_PROG(sock_release, struct socket *sock)
 {
@@ -161,48 +268,12 @@ int BPF_PROG(sock_release, struct socket *sock)
         return 0;
     }
 
-    struct sock *sk = sock->sk;
-    u16 sport, dport;
-    if (!extract_ports(sk, &sport, &dport)) {
-        return 0;
-    }
+    return trace_close_wait_end(sock->sk);
+}
 
-    struct close_wait_key_t key = {};
-    if (sk->__sk_common.skc_family == AF_INET) {
-        key.saddr = sk->__sk_common.skc_rcv_saddr;
-        key.daddr = sk->__sk_common.skc_daddr;
-    } else if (sk->__sk_common.skc_family == AF_INET6) {
-        bpf_probe_read_kernel(&key.saddr, sizeof(key.saddr), &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32[0]);
-        bpf_probe_read_kernel(&key.daddr, sizeof(key.daddr), &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[0]);
-    }
-    key.sport = sport;
-    key.dport = dport;
-    key.pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-    key.tgid = bpf_get_current_pid_tgid() >> 32;
-
-    // CLOSE_WAIT 정보 조회
-    struct close_wait_info_t *info = bpf_map_lookup_elem(&close_wait_sockets, &key);
-    if (info) {
-        u64 current_time = bpf_ktime_get_ns() / 1000000000; // 초 단위
-        u64 duration = current_time - info->start_time;
-        
-        bpf_printk("Socket release: duration=%llu seconds, threshold=%d\n", duration, MAX_DURATION);
-        
-        // 30초 이상인 경우만 히스토그램에 추가
-        if (duration >= MAX_DURATION) {
-            struct duration_key_t duration_key = {};
-            duration_key.bucket = duration / 5; // 5초 단위로 버킷화
-            
-            increment_map(&tcp_close_wait_duration_seconds, &duration_key, 1);
-            bpf_printk("Long CLOSE_WAIT detected! duration=%llu seconds, bucket=%d\n", duration, duration_key.bucket);
-        }
-        
-        // 맵에서 제거
-        bpf_map_delete_elem(&close_wait_sockets, &key);
-    } else {
-        bpf_printk("No CLOSE_WAIT info found for socket\n");
-    }
-    
+SEC("fentry/tcp_keepalive_timer")
+int BPF_PROG(tcp_keepalive_timer, struct timer_list *t)
+{
     return 0;
 }
 

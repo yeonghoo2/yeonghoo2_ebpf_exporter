@@ -1,11 +1,44 @@
 metrics:
+  # 1. 실시간 총 카운터
+  counters:
+    - name: tcp_close_wait_total
+      help: "Current number of sockets in CLOSE_WAIT state"
+      labels: []
+
+    - name: tcp_close_wait_by_node_process
+      help: "CLOSE_WAIT sockets by node and process"
+      labels:
+        - name: pid
+          size: 4
+          decoders:
+            - name: uint
+        - name: node_ip
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: ifindex
+          size: 4
+          decoders:
+            - name: uint
+
+  # 2. 지속 시간 히스토그램 (30초 이상만)
   histograms:
     - name: tcp_close_wait_duration_seconds
       help: "Duration of TCP CLOSE_WAIT state (only for durations >= 30 seconds)"
       bucket_type: linear
-      bucket_min: 6  # 30초 / 5초 = 6 (30초부터 시작)
-      bucket_max: 60 # 300초 / 5초 = 60 (300초까지)
-      bucket_multiplier: 5 # 5초 단위로 버킷화
+      bucket_min: 6    # 30초 / 5초 = 6
+      bucket_max: 60   # 300초 / 5초 = 60
+      bucket_multiplier: 5  # 5초 단위로 버킷화
+      labels:
+        - name: bucket
+          size: 4
+          decoders:
+            - name: uint
+
+  # 3. 상세 추적 정보 (30초 이상 지속된 소켓들)
+  gauges:
+    - name: tcp_close_wait_long_duration_info
+      help: "Detailed information about long-duration CLOSE_WAIT sockets"
       labels:
         - name: src_ip
           size: 4
@@ -31,7 +64,75 @@ metrics:
           size: 4
           decoders:
             - name: uint
-        - name: bucket
+      value:
+        - name: start_time
+          size: 8
+          decoders:
+            - name: uint
+        - name: state
+          size: 4
+          decoders:
+            - name: uint
+        - name: uid
+          size: 4
+          decoders:
+            - name: uint
+        - name: node_ip
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: ifindex
+          size: 4
+          decoders:
+            - name: uint
+
+  # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보
+  gauges:
+    - name: tcp_close_wait_current_sockets
+      help: "Currently tracked CLOSE_WAIT sockets with detailed information"
+      labels:
+        - name: src_ip
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: dst_ip
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: src_port
+          size: 2
+          decoders:
+            - name: uint
+        - name: dst_port
+          size: 2
+          decoders:
+            - name: uint
+        - name: pid
+          size: 4
+          decoders:
+            - name: uint
+        - name: tgid
+          size: 4
+          decoders:
+            - name: uint
+      value:
+        - name: start_time
+          size: 8
+          decoders:
+            - name: uint
+        - name: state
+          size: 4
+          decoders:
+            - name: uint
+        - name: uid
+          size: 4
+          decoders:
+            - name: uint
+        - name: node_ip
+          size: 4
+          decoders:
+            - name: inet_ip
+        - name: ifindex
           size: 4
           decoders:
             - name: uint
