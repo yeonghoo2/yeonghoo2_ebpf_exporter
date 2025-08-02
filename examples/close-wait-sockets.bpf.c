@@ -12,15 +12,7 @@
 #define AF_INET6 10
 #define UPPER_PORT_BOUND 32768
 
-// 1. 실시간 카운터 (모든 CLOSE_WAIT 소켓) - 16자 이내
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, u32);
-    __type(value, u64);
-} close_wait_total SEC(".maps");
-
-// 2. 프로세스별 카운터 (node_ip 제거) - 16자 이내
+// 1. 프로세스별 카운터 (node_ip 제거) - 16자 이내
 // 패딩 문제를 피하기 위해 u64로 통합
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -29,7 +21,7 @@ struct {
     __type(value, u64);
 } close_wait_proc SEC(".maps");
 
-// 3. 상세 추적 (모든 CLOSE_WAIT 소켓) - 16자 이내
+// 2. 상세 추적 (모든 CLOSE_WAIT 소켓) - 16자 이내
 // 단순화된 키 구조체
 struct close_wait_key_t {
     u32 pid;
@@ -46,7 +38,7 @@ struct {
     __type(value, u64);  // 단순히 카운터로 사용
 } close_wait_sock SEC(".maps");
 
-// 4. 지속 시간별 히스토그램 (30초 이상만) - 16자 이내
+// 3. 지속 시간별 히스토그램 (30초 이상만) - 16자 이내
 struct duration_key_t {
     u32 bucket;
 };
@@ -58,7 +50,7 @@ struct {
     __type(value, u64);
 } close_wait_hist SEC(".maps");
 
-// 5. 30초 이상 지속된 소켓 추적 - 16자 이내
+// 4. 30초 이상 지속된 소켓 추적 - 16자 이내
 struct long_duration_key_t {
     u32 saddr;
     u32 daddr;
@@ -128,17 +120,13 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
 
     u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
-    // 1. 전체 카운터 증가
-    u32 total_key = 0;
-    increment_map_value(&close_wait_total, &total_key, 1);
-
-    // 2. 프로세스별 카운터 (u64 키 사용)
+    // 1. 프로세스별 카운터 (u64 키 사용)
     u32 ifindex = get_interface_index(sk);
     u64 process_key = make_process_key(pid, ifindex);
     
     increment_map_value(&close_wait_proc, &process_key, 1);
 
-    // 3. 상세 추적을 위한 소켓 정보 저장 (단순화된 키)
+    // 2. 상세 추적을 위한 소켓 정보 저장 (단순화된 키)
     struct close_wait_key_t key = {};
     u32 family = 0;
     if (bpf_probe_read_kernel(&family, sizeof(family), &sk->__sk_common.skc_family) == 0) {
@@ -200,13 +188,6 @@ static int trace_close_wait_end(const struct sock *sk)
         return 0; // CLOSE_WAIT 상태가 아니었던 소켓
     }
 
-    // 카운터들 감소
-    u32 total_key = 0;
-    u64 *total_count = bpf_map_lookup_elem(&close_wait_total, &total_key);
-    if (total_count && *total_count > 0) {
-        __sync_fetch_and_add(total_count, -1);
-    }
-
     // 프로세스별 카운터 감소 (u64 키 사용)
     u32 ifindex = get_interface_index(sk);
     u64 process_key = make_process_key(pid, ifindex);
@@ -260,14 +241,6 @@ int tcp_set_state_probe(struct pt_regs *ctx)
     int state = (int)PT_REGS_PARM2(ctx);
     
     if (!sk) return 0;
-    
-    // 맵 초기화 (첫 번째 호출 시)
-    u32 total_key = 0;
-    u64 *total_count = bpf_map_lookup_elem(&close_wait_total, &total_key);
-    if (!total_count) {
-        u64 zero = 0;
-        bpf_map_update_elem(&close_wait_total, &total_key, &zero, BPF_ANY);
-    }
 
     if (state == TCP_CLOSE_WAIT) {
         bpf_printk("CLOSE_WAIT state detected! state=%d\n", state);

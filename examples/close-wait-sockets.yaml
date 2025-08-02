@@ -1,10 +1,6 @@
 metrics:
-  # 1. 실시간 총 카운터
+  # 1. 프로세스별 카운터
   counters:
-    - name: close_wait_total
-      help: "Current number of sockets in CLOSE_WAIT state"
-      labels: []
-
     - name: close_wait_proc
       help: "CLOSE_WAIT sockets by process and interface"
       labels:
