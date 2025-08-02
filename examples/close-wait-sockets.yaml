@@ -1,3 +1,5 @@
+# promql : topk(5, sum by (pid, hostname) (ebpf_exporter_close_wait_sock{pid!="0"}))
+
 metrics:
   # 1. 프로세스별 카운터
   counters:
