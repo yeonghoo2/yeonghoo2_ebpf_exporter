@@ -33,7 +33,7 @@ struct {
     __uint(max_entries, 1);
     __type(key, u32);
     __type(value, u64);
-} close_wait_counter SEC(".maps");
+} close_wait_sock SEC(".maps");
 
 // 3. 지속 시간별 히스토그램
 struct duration_key_t {
@@ -67,7 +67,7 @@ static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 static void safe_increment_counter(s64 delta)
 {
     u32 key = 0;
-    u64 *count = bpf_map_lookup_elem(&close_wait_counter, &key);
+    u64 *count = bpf_map_lookup_elem(&close_wait_sock, &key);
     if (count) {
         // 언더플로우 방지
         if (delta < 0 && *count < (u64)(-delta)) {
@@ -78,7 +78,7 @@ static void safe_increment_counter(s64 delta)
     } else {
         // 맵에 항목이 없으면 초기화
         u64 initial = (delta > 0) ? delta : 0;
-        bpf_map_update_elem(&close_wait_counter, &key, &initial, BPF_ANY);
+        bpf_map_update_elem(&close_wait_sock, &key, &initial, BPF_ANY);
     }
 }
 
