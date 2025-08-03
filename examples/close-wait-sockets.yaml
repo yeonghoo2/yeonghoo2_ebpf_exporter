@@ -1,15 +1,10 @@
 # promql : sum by (hostname) (ebpf_exporter_close_wait_sock)
 
 metrics:
-  # 1. 인터페이스별 CLOSE_WAIT 소켓 카운터
+  # 1. CLOSE_WAIT 소켓 카운터
   counters:
     - name: close_wait_proc
-      help: "CLOSE_WAIT sockets by interface"
-      labels:
-        - name: ifindex
-          size: 4
-          decoders:
-            - name: uint
+      help: "CLOSE_WAIT sockets count"
 
   # 2. 지속 시간 히스토그램 (30초 이상만)
   histograms:
@@ -25,7 +20,7 @@ metrics:
           decoders:
             - name: uint
 
-  # 3. 상세 추적 정보 (30초 이상 지속된 소켓들) - pid 제거
+  # 3. 상세 추적 정보 (30초 이상 지속된 소켓들)
   counters:
     - name: long_duration
       help: "Detailed information about long-duration CLOSE_WAIT sockets"
@@ -62,16 +57,12 @@ metrics:
           size: 4
           decoders:
             - name: uint
-        - name: ifindex
-          size: 4
-          decoders:
-            - name: uint
         - name: padding
           size: 8
           decoders:
             - name: uint
 
-    # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보 - pid 제거
+    # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보
     - name: close_wait_sock
       help: "Currently tracked CLOSE_WAIT sockets with detailed information"
       labels:
@@ -91,7 +82,3 @@ metrics:
           size: 4
           decoders:
             - name: inet_ip
-        - name: ifindex
-          size: 4
-          decoders:
-            - name: uint
