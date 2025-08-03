@@ -61,6 +61,10 @@ metrics:
           size: 4
           decoders:
             - name: uint
+        - name: padding
+          size: 12
+          decoders:
+            - name: uint
 
     # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보
     - name: close_wait_sock
@@ -81,4 +85,8 @@ metrics:
         - name: dst_ip
           size: 4
           decoders:
-            - name: inet_ip
+            - name: uint
+        - name: padding
+          size: 4
+          decoders:
+            - name: uint
