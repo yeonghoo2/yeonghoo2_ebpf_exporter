@@ -58,18 +58,9 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
 
     u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
-    // 맵 초기화 및 증가
+    // 표준 헬퍼 함수 사용 - syscalls 예제와 동일한 방식
     u32 counter_key = 0;
-    u64 *count = bpf_map_lookup_elem(&close_wait_sock, &counter_key);
-    if (!count) {
-        u64 zero = 0;
-        bpf_map_update_elem(&close_wait_sock, &counter_key, &zero, BPF_NOEXIST);
-        count = bpf_map_lookup_elem(&close_wait_sock, &counter_key);
-        if (!count) {
-            return 0;
-        }
-    }
-    __sync_fetch_and_add(count, 1);
+    increment_map(&close_wait_sock, &counter_key, 1);
     
     bpf_printk("CLOSE_WAIT START: pid=%d, sport=%d, dport=%d\n", pid, sport, dport);
     return 0;
@@ -84,12 +75,9 @@ static int trace_close_wait_end(const struct sock *sk)
 
     u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
-    // 맵 감소
+    // 표준 헬퍼 함수 사용 - 감소
     u32 counter_key = 0;
-    u64 *count = bpf_map_lookup_elem(&close_wait_sock, &counter_key);
-    if (count && *count > 0) {
-        __sync_fetch_and_add(count, -1);
-    }
+    increment_map(&close_wait_sock, &counter_key, -1);
     
     bpf_printk("CLOSE_WAIT END: pid=%d, sport=%d, dport=%d\n", pid, sport, dport);
     
