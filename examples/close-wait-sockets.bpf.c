@@ -10,7 +10,6 @@
 #define TCP_ESTABLISHED 1
 #define AF_INET 2
 #define AF_INET6 10
-#define UPPER_PORT_BOUND 32768
 
 // 1. CLOSE_WAIT 소켓 추적 맵 (소켓 포인터를 키로 사용)
 struct socket_info {
@@ -57,9 +56,6 @@ static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
     }
     *dport = __builtin_bswap16(*dport);
     
-    if (*sport > UPPER_PORT_BOUND && *dport > UPPER_PORT_BOUND) {
-        return 0;
-    }
     return 1;
 }
 
