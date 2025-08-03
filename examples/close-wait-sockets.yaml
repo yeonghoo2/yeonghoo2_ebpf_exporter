@@ -1,9 +1,7 @@
-# promql : sum by (hostname) (ebpf_exporter_close_wait_sock)
-
 metrics:
   # 1. CLOSE_WAIT 소켓 카운터
   counters:
-    - name: close_wait_proc
+    - name: close_wait_sock
       help: "CLOSE_WAIT sockets count"
 
   # 2. 지속 시간 히스토그램 (30초 이상만)
@@ -16,77 +14,6 @@ metrics:
       bucket_multiplier: 5  # 5초 단위로 버킷화
       labels:
         - name: bucket
-          size: 4
-          decoders:
-            - name: uint
-
-  # 3. 상세 추적 정보 (30초 이상 지속된 소켓들)
-  counters:
-    - name: long_duration
-      help: "Detailed information about long-duration CLOSE_WAIT sockets"
-      labels:
-        - name: src_ip
-          size: 4
-          decoders:
-            - name: inet_ip
-        - name: dst_ip
-          size: 4
-          decoders:
-            - name: inet_ip
-        - name: src_port
-          size: 2
-          decoders:
-            - name: uint
-        - name: dst_port
-          size: 2
-          decoders:
-            - name: uint
-        - name: tgid
-          size: 4
-          decoders:
-            - name: uint
-        - name: start_time
-          size: 8
-          decoders:
-            - name: uint
-        - name: state
-          size: 4
-          decoders:
-            - name: uint
-        - name: uid
-          size: 4
-          decoders:
-            - name: uint
-        - name: ifindex
-          size: 4
-          decoders:
-            - name: uint
-        - name: padding
-          size: 12
-          decoders:
-            - name: uint
-
-    # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보
-    - name: close_wait_sock
-      help: "Currently tracked CLOSE_WAIT sockets with detailed information"
-      labels:
-        - name: src_port
-          size: 4
-          decoders:
-            - name: uint
-        - name: dst_port
-          size: 4
-          decoders:
-            - name: uint
-        - name: src_ip
-          size: 4
-          decoders:
-            - name: inet_ip
-        - name: dst_ip
-          size: 4
-          decoders:
-            - name: uint
-        - name: padding
           size: 4
           decoders:
             - name: uint
