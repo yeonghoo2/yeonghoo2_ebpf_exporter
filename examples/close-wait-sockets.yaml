@@ -3,6 +3,11 @@ metrics:
   counters:
     - name: close_wait_sock
       help: "CLOSE_WAIT sockets count"
+      labels:
+        - name: counter
+          size: 4
+          decoders:
+            - name: uint
 
   # 2. 지속 시간 히스토그램 (30초 이상만)
   histograms:
