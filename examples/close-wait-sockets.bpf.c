@@ -1,6 +1,7 @@
 #include <vmlinux.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_helpers.h>
+#include "maps.bpf.h"  // 표준 헬퍼 함수들 포함
 
 #define MAX_ENTRIES 8192
 #define MAX_DURATION 30 // 30초 (초 단위)
@@ -13,10 +14,10 @@
 #define AF_INET6 10
 #define UPPER_PORT_BOUND 32768
 
-// 1. CLOSE_WAIT 소켓 카운터 (단순한 카운터)
+// 1. CLOSE_WAIT 소켓 카운터 (HASH 맵으로 변경)
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
     __type(key, u32);
     __type(value, u64);
 } close_wait_sock SEC(".maps");
@@ -32,16 +33,6 @@ struct {
     __type(key, struct duration_key_t);
     __type(value, u64);
 } close_wait_hist SEC(".maps");
-
-// 헬퍼 함수들
-static void increment_map_value(void *map, void *key, u64 value) {
-    u64 *count = bpf_map_lookup_elem(map, key);
-    if (count) {
-        __sync_fetch_and_add(count, value);
-    } else {
-        bpf_map_update_elem(map, key, &value, BPF_ANY);
-    }
-}
 
 static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 {
@@ -67,9 +58,9 @@ static int trace_close_wait_start(const struct sock *sk, u32 state)
 
     u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
-    // CLOSE_WAIT 소켓 카운터 증가
+    // 표준 헬퍼 함수 사용
     u32 counter_key = 0;
-    increment_map_value(&close_wait_sock, &counter_key, 1);
+    increment_map(&close_wait_sock, &counter_key, 1);
     
     bpf_printk("CLOSE_WAIT START: pid=%d, sport=%d, dport=%d\n", pid, sport, dport);
     return 0;
@@ -84,19 +75,16 @@ static int trace_close_wait_end(const struct sock *sk)
 
     u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
 
-    // CLOSE_WAIT 소켓 카운터 감소
+    // 표준 헬퍼 함수 사용
     u32 counter_key = 0;
-    u64 *pcount = bpf_map_lookup_elem(&close_wait_sock, &counter_key);
-    if (pcount && *pcount > 0) {
-        __sync_fetch_and_add(pcount, -1);
-    }
+    increment_map(&close_wait_sock, &counter_key, -1);  // 감소
     
     bpf_printk("CLOSE_WAIT END: pid=%d, sport=%d, dport=%d\n", pid, sport, dport);
     
     // 30초 이상 지속된 경우 히스토그램 업데이트
     struct duration_key_t duration_key = {};
     duration_key.bucket = 1; // 기본값
-    increment_map_value(&close_wait_hist, &duration_key, 1);
+    increment_map(&close_wait_hist, &duration_key, 1);
     
     return 0;
 }
