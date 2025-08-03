@@ -1,13 +1,13 @@
-# promql : topk(5, sum by (pid, hostname) (ebpf_exporter_close_wait_sock{pid!="0"}))
+# promql : sum by (hostname) (ebpf_exporter_close_wait_sock)
 
 metrics:
-  # 1. 프로세스별 카운터
+  # 1. 인터페이스별 CLOSE_WAIT 소켓 카운터
   counters:
     - name: close_wait_proc
-      help: "CLOSE_WAIT sockets by process and interface"
+      help: "CLOSE_WAIT sockets by interface"
       labels:
-        - name: pid_ifindex
-          size: 8
+        - name: ifindex
+          size: 4
           decoders:
             - name: uint
 
@@ -25,7 +25,7 @@ metrics:
           decoders:
             - name: uint
 
-  # 3. 상세 추적 정보 (30초 이상 지속된 소켓들) - counters로 변경
+  # 3. 상세 추적 정보 (30초 이상 지속된 소켓들) - pid 제거
   counters:
     - name: long_duration
       help: "Detailed information about long-duration CLOSE_WAIT sockets"
@@ -44,10 +44,6 @@ metrics:
             - name: uint
         - name: dst_port
           size: 2
-          decoders:
-            - name: uint
-        - name: pid
-          size: 4
           decoders:
             - name: uint
         - name: tgid
@@ -75,14 +71,10 @@ metrics:
           decoders:
             - name: uint
 
-    # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보 - counters로 변경
+    # 4. 현재 추적 중인 모든 CLOSE_WAIT 소켓 정보 - pid 제거
     - name: close_wait_sock
       help: "Currently tracked CLOSE_WAIT sockets with detailed information"
       labels:
-        - name: pid
-          size: 4
-          decoders:
-            - name: uint
         - name: src_port
           size: 4
           decoders:
@@ -99,3 +91,7 @@ metrics:
           size: 4
           decoders:
             - name: inet_ip
+        - name: ifindex
+          size: 4
+          decoders:
+            - name: uint
