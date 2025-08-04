@@ -77,6 +77,28 @@ static void safe_increment_counter(s64 delta)
     }
 }
 
+static int get_current_process_info(u32 *pid, u32 *tgid)
+{
+    struct task_struct *current = (struct task_struct *)bpf_get_current_task();
+    if (!current) {
+        // fallback
+        u64 pid_tgid = bpf_get_current_pid_tgid();
+        *pid = (u32)pid_tgid;
+        *tgid = (u32)(pid_tgid >> 32);
+        return 0;
+    }
+    
+    // 현재 태스크에서 PID와 TGID 직접 읽기
+    if (bpf_probe_read_kernel(pid, sizeof(*pid), &current->pid) != 0) {
+        *pid = 0;
+    }
+    if (bpf_probe_read_kernel(tgid, sizeof(*tgid), &current->tgid) != 0) {
+        *tgid = 0;
+    }
+    
+    return 1;
+}
+
 static int trace_close_wait_start(const struct sock *sk)
 {
     u16 sport, dport;
@@ -84,8 +106,9 @@ static int trace_close_wait_start(const struct sock *sk)
         return 0;
     }
 
-    // 간단한 PID 수집
-    u32 actual_pid = (u32)bpf_get_current_pid_tgid();
+    // 현재 프로세스 정보 가져오기
+    u32 pid, tgid;
+    get_current_process_info(&pid, &tgid);
     
     u64 sock_ptr = (u64)sk;
     
@@ -96,7 +119,7 @@ static int trace_close_wait_start(const struct sock *sk)
     }
 
     struct socket_info info = {
-        .pid = actual_pid,
+        .pid = pid,
         .sport = sport,
         .dport = dport,
         .start_time = bpf_ktime_get_ns()
@@ -118,7 +141,6 @@ static int trace_close_wait_end(const struct sock *sk)
     // 추적 중인 소켓인지 확인
     struct socket_info *info = bpf_map_lookup_elem(&close_wait_sockets, &sock_ptr);
     if (!info) {
-        // 추적하지 않던 소켓이면 무시
         return 0;
     }
 
@@ -126,18 +148,13 @@ static int trace_close_wait_end(const struct sock *sk)
     u64 duration_ns = bpf_ktime_get_ns() - info->start_time;
     u64 duration_sec = duration_ns / 1000000000ULL;
 
-    // bpf_printk("CLOSE_WAIT END: pid=%d, sport=%d, dport=%d, duration=%llu sec\n", 
-    //            info->pid, info->sport, info->dport, duration_sec);
-
     // 30초 이상 지속된 경우 히스토그램 업데이트
     if (duration_sec >= 30) {
         struct duration_key_t duration_key = {};
-        // 더 유연한 버킷 계산
         u32 bucket = (duration_sec >= 300) ? 3 : 
                      (duration_sec >= 60) ? 2 : 1;
         duration_key.bucket = bucket;
         
-        // 히스토그램 업데이트를 위한 안전한 증가
         u64 *hist_count = bpf_map_lookup_elem(&close_wait_hist, &duration_key);
         if (hist_count) {
             (*hist_count)++;
