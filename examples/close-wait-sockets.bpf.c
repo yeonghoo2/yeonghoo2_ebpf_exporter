@@ -1,3 +1,8 @@
+// close-wait 상태 소켓 추적
+// node 레벨에서는 metric으로 노출
+// 카디널리티 문제로 pid, tid를 map에 저장한 메트릭은 노출하지않음
+// 노드의 close-wait 소켓 수를 모니터링하다가 이상한 점이 발생하는 노드에는 직접 접속해서 bpftool로 확인
+
 #include <vmlinux.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_helpers.h>
