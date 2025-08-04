@@ -3,13 +3,10 @@
 #include <bpf/bpf_helpers.h>
 #include "maps.bpf.h"
 
-#define MAX_ENTRIES 8192
-#define MAX_DURATION 30
+// TCP 상태 상수 정의
 #define TCP_CLOSE_WAIT 8
 #define TCP_CLOSE 7
 #define TCP_ESTABLISHED 1
-#define AF_INET 2
-#define AF_INET6 10
 
 // 1. CLOSE_WAIT 소켓 추적 맵 (소켓 포인터를 키로 사용)
 struct socket_info {
@@ -48,6 +45,8 @@ struct {
 
 static int extract_ports(const struct sock *sk, u16 *sport, u16 *dport)
 {
+    if (!sk) return 0;
+    
     if (bpf_probe_read_kernel(sport, sizeof(*sport), &sk->__sk_common.skc_num) != 0) {
         return 0;
     }
@@ -85,18 +84,19 @@ static int trace_close_wait_start(const struct sock *sk)
         return 0;
     }
 
-    u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    // 간단한 PID 수집
+    u32 actual_pid = (u32)bpf_get_current_pid_tgid();
+    
     u64 sock_ptr = (u64)sk;
     
     // 이미 추적 중인 소켓인지 확인
     struct socket_info *existing = bpf_map_lookup_elem(&close_wait_sockets, &sock_ptr);
     if (existing) {
-        // 이미 추적 중이면 중복 처리하지 않음
         return 0;
     }
 
     struct socket_info info = {
-        .pid = pid,
+        .pid = actual_pid,
         .sport = sport,
         .dport = dport,
         .start_time = bpf_ktime_get_ns()
@@ -108,8 +108,6 @@ static int trace_close_wait_start(const struct sock *sk)
     // 카운터 증가
     safe_increment_counter(1);
     
-    bpf_printk("CLOSE_WAIT START: pid=%d, sport=%d, dport=%d, sock=%llx\n", 
-               pid, sport, dport, sock_ptr);
     return 0;
 }
 
@@ -128,19 +126,16 @@ static int trace_close_wait_end(const struct sock *sk)
     u64 duration_ns = bpf_ktime_get_ns() - info->start_time;
     u64 duration_sec = duration_ns / 1000000000ULL;
 
-    bpf_printk("CLOSE_WAIT END: pid=%d, sport=%d, dport=%d, duration=%llu sec\n", 
-               info->pid, info->sport, info->dport, duration_sec);
+    // bpf_printk("CLOSE_WAIT END: pid=%d, sport=%d, dport=%d, duration=%llu sec\n", 
+    //            info->pid, info->sport, info->dport, duration_sec);
 
     // 30초 이상 지속된 경우 히스토그램 업데이트
     if (duration_sec >= 30) {
         struct duration_key_t duration_key = {};
-        if (duration_sec < 60) {
-            duration_key.bucket = 1; // 30-60초
-        } else if (duration_sec < 300) {
-            duration_key.bucket = 2; // 1-5분
-        } else {
-            duration_key.bucket = 3; // 5분 이상
-        }
+        // 더 유연한 버킷 계산
+        u32 bucket = (duration_sec >= 300) ? 3 : 
+                     (duration_sec >= 60) ? 2 : 1;
+        duration_key.bucket = bucket;
         
         // 히스토그램 업데이트를 위한 안전한 증가
         u64 *hist_count = bpf_map_lookup_elem(&close_wait_hist, &duration_key);
@@ -177,12 +172,14 @@ int tcp_set_state_probe(struct pt_regs *ctx)
         return 0;
     }
 
-    bpf_printk("TCP state change: %d -> %d\n", current_state, new_state);
+    // bpf_printk("TCP state change: %d -> %d, sock=%llx\n", current_state, new_state, (u64)sk);
 
     if (new_state == TCP_CLOSE_WAIT) {
+        // bpf_printk("Entering CLOSE_WAIT state\n");
         return trace_close_wait_start(sk);
     } else if (current_state == TCP_CLOSE_WAIT && new_state != TCP_CLOSE_WAIT) {
         // CLOSE_WAIT에서 다른 상태로 변경
+        // bpf_printk("Leaving CLOSE_WAIT state\n");
         return trace_close_wait_end(sk);
     }
 
