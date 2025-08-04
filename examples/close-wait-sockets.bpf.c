@@ -15,7 +15,7 @@
 
 // 1. CLOSE_WAIT 소켓 추적 맵 (소켓 포인터를 키로 사용)
 struct socket_info {
-    u32 pid;
+    u32 pid;    
     u16 sport;
     u16 dport;
     u64 start_time;
