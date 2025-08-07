@@ -36,6 +36,14 @@ struct {
     __type(value, u64);
 } close_wait_sock SEC(".maps");
 
+// 3. 현재 활성화된 CLOSE_WAIT 소켓 추적 (정확한 카운팅용)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key, u64);  // 소켓 포인터를 키로 사용
+    __type(value, u32); // 단순히 존재 여부만 추적
+} active_close_wait_sockets SEC(".maps");
+
 // 3. 지속 시간별 히스토그램
 struct duration_key_t {
     u32 bucket;
@@ -123,6 +131,10 @@ static int trace_close_wait_start(const struct sock *sk)
         return 0;
     }
 
+    // active_close_wait_sockets에 추가
+    u32 dummy = 1;
+    bpf_map_update_elem(&active_close_wait_sockets, &sock_ptr, &dummy, BPF_ANY);
+
     struct socket_info info = {
         .pid = pid,
         .sport = sport,
@@ -169,6 +181,9 @@ static int trace_close_wait_end(const struct sock *sk)
         }
     }
 
+    // active_close_wait_sockets에서 제거
+    bpf_map_delete_elem(&active_close_wait_sockets, &sock_ptr);
+
     // 소켓 추적 정보 제거
     bpf_map_delete_elem(&close_wait_sockets, &sock_ptr);
     
@@ -197,11 +212,11 @@ int tcp_set_state_probe(struct pt_regs *ctx)
     // bpf_printk("TCP state change: %d -> %d, sock=%llx\n", current_state, new_state, (u64)sk);
 
     if (new_state == TCP_CLOSE_WAIT) {
-        // bpf_printk("Entering CLOSE_WAIT state\n");
+        bpf_printk("Entering CLOSE_WAIT state: sock=%llx\n", (u64)sk);
         return trace_close_wait_start(sk);
     } else if (current_state == TCP_CLOSE_WAIT && new_state != TCP_CLOSE_WAIT) {
+        bpf_printk("Leaving CLOSE_WAIT state: sock=%llx\n", (u64)sk);
         // CLOSE_WAIT에서 다른 상태로 변경
-        // bpf_printk("Leaving CLOSE_WAIT state\n");
         return trace_close_wait_end(sk);
     }
 
