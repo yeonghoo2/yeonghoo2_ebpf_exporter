@@ -212,18 +212,18 @@ int tcp_set_state_probe(struct pt_regs *ctx)
     // bpf_printk("TCP state change: %d -> %d, sock=%llx\n", current_state, new_state, (u64)sk);
 
     if (new_state == TCP_CLOSE_WAIT) {
-        bpf_printk("Entering CLOSE_WAIT state: sock=%llx\n", (u64)sk);
+        // bpf_printk("Entering CLOSE_WAIT state\n");
         return trace_close_wait_start(sk);
     } else if (current_state == TCP_CLOSE_WAIT && new_state != TCP_CLOSE_WAIT) {
-        bpf_printk("Leaving CLOSE_WAIT state: sock=%llx\n", (u64)sk);
         // CLOSE_WAIT에서 다른 상태로 변경
+        // bpf_printk("Leaving CLOSE_WAIT state\n");
         return trace_close_wait_end(sk);
     }
 
     return 0;
 }
 
-// 소켓 해제 감지
+// 소켓 해제 감지 - 더 정확한 추적을 위해
 SEC("kprobe/__sock_release")
 int sock_release_probe(struct pt_regs *ctx)
 {
@@ -232,9 +232,20 @@ int sock_release_probe(struct pt_regs *ctx)
 
     struct sock *sk;
     if (bpf_probe_read_kernel(&sk, sizeof(sk), &sock->sk) == 0 && sk) {
+        // 소켓이 해제될 때도 close_wait 상태였다면 추적 종료
         return trace_close_wait_end(sk);
     }
     return 0;
+}
+
+// 추가: 소켓이 완전히 해제될 때도 추적 종료
+SEC("kprobe/sock_put")
+int sock_put_probe(struct pt_regs *ctx)
+{
+    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    if (!sk) return 0;
+
+    return trace_close_wait_end(sk);
 }
 
 char LICENSE[] SEC("license") = "GPL";
